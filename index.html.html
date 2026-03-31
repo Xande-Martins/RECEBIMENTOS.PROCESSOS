@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RECEBIMENTO DE PROCESSOS - PALETIZADO</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background-color: #f0f2f5; color: #333; }
+        .container { max-width: 1400px; margin: auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; border-bottom: 2px solid #eee; padding-bottom: 15px; }
+        .btns-topo { display: flex; gap: 10px; }
+        .btn { padding: 10px 18px; border-radius: 5px; cursor: pointer; border: none; font-weight: bold; transition: 0.3s; }
+        .upload-btn { background: #6c757d; color: white; }
+        .report-btn { background: #28a745; color: white; display: none; }
+        .report-btn:hover { background: #218838; }
+
+        .input-area { display: flex; gap: 15px; background: #2c3e50; padding: 25px; border-radius: 10px; color: white; margin-bottom: 30px; }
+        .input-box { flex: 1; }
+        .input-box label { display: block; margin-bottom: 8px; font-weight: bold; font-size: 0.8rem; color: #bdc3c7; text-transform: uppercase; }
+        input { width: 100%; padding: 12px; border-radius: 6px; border: none; font-size: 1.2rem; font-weight: bold; box-sizing: border-box; }
+        input:focus { outline: 4px solid #3498db; background-color: #fffde7; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th { background-color: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6; font-size: 0.75rem; text-transform: uppercase; }
+        td { padding: 12px; border-bottom: 1px solid #eee; font-size: 0.95rem; }
+
+        .row-ok { background-color: #d4edda !important; }
+        .row-excesso { background-color: #f8d7da !important; }
+        .row-nao-listado { background-color: #e9ecef !important; font-style: italic; }
+        
+        .status-badge { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 0.85rem; }
+        .badge-ok { color: #28a745; }
+        .badge-error { color: #dc3545; }
+        .historico { font-family: monospace; color: #666; font-size: 0.9rem; }
+        .diff-negativa { color: #dc3545; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1>🚀 RECEBIMENTO DE PROCESSOS</h1>
+        <div class="btns-topo">
+            <button class="btn report-btn" id="btnRelatorio" onclick="gerarRelatorio()">📥 Gerar Relatório Excel</button>
+            <label for="upload" class="btn upload-btn">📁 Selecionar Planilha Base</label>
+            <input type="file" id="upload" accept=".xlsx, .xls" style="display:none">
+        </div>
+    </div>
+
+    <div class="input-area" id="painelBipagem" style="display:none;">
+        <div class="input-box" style="flex: 0.5;">
+            <label>N° Palete</label>
+            <input type="text" id="paleteField" placeholder="Ex: P001" autocomplete="off">
+        </div>
+        <div class="input-box">
+            <label>SKU do Material</label>
+            <input type="text" id="skuField" placeholder="Bipe o SKU..." autocomplete="off">
+        </div>
+        <div class="input-box" style="flex: 0.5;">
+            <label>Quantidade</label>
+            <input type="number" id="qtyField" placeholder="0" autocomplete="off">
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 10%;">Último Palete</th>
+                <th style="width: 15%;">SKU</th>
+                <th style="width: 10%;">Esperado</th>
+                <th style="width: 10%;">Conferido</th>
+                <th style="width: 10%;">Diferença</th>
+                <th style="width: 45%;">Histórico (Soma Detalhada)</th>
+            </tr>
+        </thead>
+        <tbody id="tabelaCorpo">
+            <tr><td colspan="6" style="text-align:center; padding: 40px; color: #999;">Aguardando planilha base...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<script>
+    let dadosPlanilha = [];
+    let logsConferencia = []; // Armazena Palete + SKU + Qty para o relatório
+
+    const paleteField = document.getElementById('paleteField');
+    const skuField = document.getElementById('skuField');
+    const qtyField = document.getElementById('qtyField');
+
+    // 1. CARREGAR PLANILHA
+    document.getElementById('upload').addEventListener('change', function(e) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const workbook = XLSX.read(new Uint8Array(event.target.result), {type: 'array'});
+            const json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+            
+            dadosPlanilha = json.map(item => ({
+                sku: String(item.Codigo || item.sku || item.SKU || ""),
+                esperado: parseInt(item.Qtd || item.qtd || item.QTD || 0),
+                conferido: 0,
+                historico: [],
+                ultimoPalete: "-",
+                naoListado: false
+            }));
+            
+            renderizarTabela();
+            document.getElementById('painelBipagem').style.display = 'flex';
+            document.getElementById('btnRelatorio').style.display = 'block';
+            paleteField.focus();
+        };
+        reader.readAsArrayBuffer(e.target.files[0]);
+    });
+
+    // 2. LÓGICA DE FLUXO (LOOP)
+    paleteField.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && paleteField.value.trim() !== "") skuField.focus();
+    });
+
+    skuField.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && skuField.value.trim() !== "") qtyField.focus();
+    });
+
+    qtyField.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            processarEntrada();
+        }
+    });
+
+    // 3. REGISTRAR DADOS
+    function processarEntrada() {
+        const palete = paleteField.value.trim();
+        const sku = skuField.value.trim();
+        const qty = parseInt(qtyField.value);
+
+        if (!palete || !sku || isNaN(qty)) {
+            alert("Preencha Palete, SKU e Quantidade corretamente!");
+            return;
+        }
+
+        let item = dadosPlanilha.find(d => d.sku === sku);
+
+        if (item) {
+            item.conferido += qty;
+            item.historico.push(qty);
+            item.ultimoPalete = palete;
+        } else {
+            dadosPlanilha.push({
+                sku: sku, esperado: 0, conferido: qty, historico: [qty],
+                ultimoPalete: palete, naoListado: true
+            });
+            alert("⚠️ SKU EXTRA ADICIONADO!");
+        }
+
+        // SALVA LOG PARA O RELATÓRIO
+        logsConferencia.push({ "Palete": palete, "SKU": sku, "Quantidade": qty, "Data/Hora": new Date().toLocaleString() });
+
+        renderizarTabela();
+        
+        // Mantém o Palete (geralmente conferem vários itens no mesmo palete)
+        // Se quiser que limpe o palete também, adicione: paleteField.value = '';
+        skuField.value = '';
+        qtyField.value = '';
+        skuField.focus(); // Volta para o SKU para agilizar
+    }
+
+    // 4. ATUALIZAR INTERFACE
+    function renderizarTabela() {
+        const tbody = document.getElementById('tabelaCorpo');
+        tbody.innerHTML = dadosPlanilha.map(item => {
+            const diferenca = item.esperado - item.conferido;
+            let rowClass = item.naoListado ? 'row-nao-listado' : '';
+            let statusBadge = '';
+
+            if (!item.naoListado) {
+                if (item.conferido === item.esperado && item.esperado !== 0) {
+                    rowClass = 'row-ok';
+                    statusBadge = '<span class="status-badge badge-ok">✔ OK</span>';
+                } else if (item.conferido > item.esperado) {
+                    rowClass = 'row-excesso';
+                    statusBadge = '<span class="status-badge badge-error">⚠️ EXCESSO</span>';
+                }
+            } else {
+                statusBadge = '<span class="status-badge">❌ NÃO LISTADO</span>';
+            }
+
+            return `
+                <tr class="${rowClass}">
+                    <td><strong>${item.ultimoPalete}</strong></td>
+                    <td>${item.sku}</td>
+                    <td>${item.esperado}</td>
+                    <td>${item.conferido}</td>
+                    <td class="${diferenca < 0 ? 'diff-negativa' : ''}">${diferenca}</td>
+                    <td>
+                        <span class="historico">${item.historico.join(' + ') || '-'}</span>
+                        ${statusBadge}
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    // 5. GERAR RELATÓRIO FINAL
+    function gerarRelatorio() {
+        if (logsConferencia.length === 0) {
+            alert("Nenhuma conferência realizada para gerar relatório.");
+            return;
+        }
+        const ws = XLSX.utils.json_to_sheet(logsConferencia);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Conferencia_Final");
+        XLSX.writeFile(wb, `Relatorio_Conferencia_${new Date().getTime()}.xlsx`);
+    }
+</script>
+
+</body>
+</html>
